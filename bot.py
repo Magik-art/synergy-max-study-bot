@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from getpass import getpass
 import hmac
 import json
+import os
 from pathlib import Path
 import re
+import sys
 import unicodedata
 
 import httpx
@@ -182,6 +184,11 @@ def create_app(token, secret, transport=None):
         raise ValueError("Нужен секрет webhook: 24–256 латинских букв, цифр или дефисов.")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.get("/healthz")
+    def health():
+        # Локальная проверка сервиса без токена и обращения к MAX.
+        return {"status": "ok", "version": "educational", "topics": len(TOPICS)}
+
     def deliver(update):
         # Адрес API фиксирован; TLS проверяется, токен передаётся заголовком.
         with httpx.Client(base_url="https://platform-api.max.ru", headers={"Authorization": token},
@@ -220,13 +227,21 @@ def main():
     parser.add_argument("--max", action="store_true", help="Запустить webhook вместо консоли")
     args = parser.parse_args()
     if args.max:
-        # Секреты вводятся скрыто, в файлы проекта не сохраняются.
+        # Сервер берёт секреты из окружения; локально можно ввести их скрыто.
         import uvicorn
         try:
-            app = create_app(getpass("Токен MAX: ").strip(), getpass("Секрет webhook: ").strip())
-        except ValueError as error:
-            parser.error(str(error))
-        uvicorn.run(app, host="127.0.0.1", port=8098, access_log=False)
+            token, secret = os.getenv("MAX_BOT_TOKEN"), os.getenv("MAX_WEBHOOK_SECRET")
+            if (not token or not secret) and not sys.stdin.isatty():
+                raise ValueError("Задайте MAX_BOT_TOKEN и MAX_WEBHOOK_SECRET в окружении сервера.")
+            app = create_app(token or getpass("Токен MAX: ").strip(),
+                             secret or getpass("Секрет webhook: ").strip())
+            port = int(os.getenv("LISTEN_PORT", "8098"))
+            if not 1 <= port <= 65535:
+                raise ValueError("LISTEN_PORT должен быть от 1 до 65535.")
+        except ValueError:
+            parser.error("Не удалось запустить сервер: проверьте токен, секрет и LISTEN_PORT.")
+        uvicorn.run(app, host="127.0.0.1", port=port, access_log=False,
+                    proxy_headers=False, server_header=False)
         return
     # Обычный запуск в PyCharm работает без токена и запросов к MAX.
     print(reply("menu", "menu").text)
